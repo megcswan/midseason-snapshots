@@ -1,0 +1,591 @@
+---
+title: "Southern Colorado Plateau I&M"
+subtitle: "Midseason data snapshot"
+date: last-modified
+date-format: "DD-MM-YYYY"
+title-block-banner: "black"
+format: 
+  html:
+    embed-resources: true
+    echo: false
+    smooth-scroll: true
+    #theme: cosmo
+    fontcolor: black
+    toc: true
+    toc-location: left
+    toc-title: Summary
+---
+
+Post-sampling snapshot of quadrat data and error check quadrat data collected from upland monitoring plots. Includes data from regular and repeat quadrats. Data from error check (repeated) quadrats are compared to regular plot reads.
+
+```{r}
+#| include: false
+#setup
+  library(RODBC)
+  library(ggplot2)
+  library(tidyverse)
+	library(gt)
+	library(DT)
+  library(cowplot)
+  library(grid)
+
+options(scipen = 100, digits = 4)
+#function to report with 2 sigfigs
+op = function(x, d=2) sprintf(paste0("%1.",d,"f"), x) 
+
+```
+
+```{r}
+#| include: false
+sourcepath <- 'C:\\_MyWorkspace\\2023UplandMerge\\'
+
+DRIVERINFO<-"Driver={Microsoft Access Driver (*.mdb, *.accdb)};"
+#insert database for base data
+sourcepath <- 'C:\\_MyWorkspace\\2023UplandMerge\\CHCU_merged_10262023.accdb'
+
+PATH<-paste0(DRIVERINFO, "DBQ=", sourcepath)
+channel<-odbcDriverConnect(PATH)
+#event
+event<-sqlFetch(channel, "tbl_Event", stringsAsFactors = F)
+#observers
+observers <- sqlFetch(channel, 'tbl_EventTransectQuadrat', stringsAsFactors = FALSE)
+#functional groups
+functional <- sqlFetch(channel,  'tbl_EventTransectQuadratFunctionalGroupsPercent', stringsAsFactors = FALSE)
+#surface features
+surfea <- sqlFetch(channel, 'tbl_EventTransectQuadratNestedSurfaceFeatures', stringsAsFactors = FALSE)
+#nested species
+species<-sqlFetch(channel, "tbl_EventTransectQuadratNestedSpeciesPercent", stringsAsFactors=F)
+#unknown species
+unknown<-sqlFetch(channel, "tbl_UnknownSpecies", stringsAsFactors=F)
+
+####insert database for repeat data
+repeat_sourcepath <- 'C:\\_MyWorkspace\\2023UplandMerge\\Repeat_CHCU_merged_10262023.accdb'
+repeat_PATH<-paste0(DRIVERINFO, "DBQ=", repeat_sourcepath)
+repeat_channel<-odbcDriverConnect(repeat_PATH)
+
+
+#event
+r_event<-sqlFetch(repeat_channel, "tbl_Event", stringsAsFactors = F)
+#observers
+r_observers <- sqlFetch(repeat_channel, 'tbl_EventTransectQuadrat', stringsAsFactors = FALSE)
+#functional groups
+r_functional <- sqlFetch(repeat_channel,  'tbl_EventTransectQuadratFunctionalGroupsPercent', stringsAsFactors = FALSE)
+#surface features
+r_repeatsurfea <- sqlFetch(repeat_channel, 'tbl_EventTransectQuadratNestedSurfaceFeatures', stringsAsFactors = FALSE)
+#nested species
+r_species<-sqlFetch(repeat_channel, "tbl_EventTransectQuadratNestedSpeciesPercent", stringsAsFactors=F)
+#unknown species
+rep_unknown<-sqlFetch(repeat_channel, "tbl_UnknownSpecies", stringsAsFactors=F)
+
+```
+
+```{r}
+#| include: false
+#Here we're formatting and merging the repeat datasets with the regular datasets.
+#event
+dates<-event%>%
+  select(Plot = PlotID, EventDate)
+
+#observers
+reg_observers<-observers%>%
+  select(TransectQuadratID, RegObs=QuadratObserver)
+rep_observers<-r_observers%>%
+  select(TransectQuadratID, RepObs=QuadratObserver)
+allobs<-rep_observers%>%
+  left_join(reg_observers, by='TransectQuadratID')
+
+#functional data set up
+repeat_fxn<-r_functional%>%
+  mutate(Status="ErrorCheck")%>%
+  select(TransectQuadratID, TotalLiveFoliarCoverPercent_10m, PerennialGrassCoverPercent_10m, ShrubCoverPercent_10m, ForbCoverPercent_10m, AnnualGrassCoverPercent_10m, StandingDeadHerbaceousCoverPercent_10m, StandingDeadWoodyCoverPercent_10m)%>%
+  pivot_longer(2:8, names_to = 'Functional_Group', values_to = 'EC_Cover')
+
+reg_fxn<-functional%>%
+  mutate(Status="Original")%>%
+  select(TransectQuadratID, TotalLiveFoliarCoverPercent_10m, PerennialGrassCoverPercent_10m, ShrubCoverPercent_10m, ForbCoverPercent_10m, AnnualGrassCoverPercent_10m, StandingDeadHerbaceousCoverPercent_10m, StandingDeadWoodyCoverPercent_10m)%>%
+  pivot_longer(2:8, names_to = 'Functional_Group', values_to = 'Cover')
+
+all_fxn<-repeat_fxn%>%
+  left_join(reg_fxn, by = c("TransectQuadratID", "Functional_Group"))
+
+all_fxn_obs<-all_fxn%>%
+  left_join(allobs, by='TransectQuadratID')%>%
+  separate(TransectQuadratID, into = c("Plot", NA, "Quadrat"), c(8,18))
+  
+
+#species data set up
+repeat_spp<-r_species%>%
+  mutate(Status="ErrorCheck")%>%
+  select(TransectQuadratID, FieldID, CoverPercent_10m, NestedQuadratSizeClass, CoverOnly)%>%
+  rename(Species = FieldID, EC_Cover = CoverPercent_10m, EC_Quad=NestedQuadratSizeClass)
+
+regular_spp<-species%>%
+  mutate(Status="Original")%>%
+  select(TransectQuadratID, FieldID, CoverPercent_10m, NestedQuadratSizeClass, CoverOnly)%>%
+  rename(Species = FieldID, Cover = CoverPercent_10m, Quad=NestedQuadratSizeClass,
+         CoverOnly = CoverOnly)
+
+all_spp<-repeat_spp%>%
+  left_join(regular_spp, by = c("TransectQuadratID", "Species"))
+
+all_spp_obs<-all_spp%>%
+  left_join(allobs, by='TransectQuadratID')%>%
+  separate(TransectQuadratID, into = c("Plot", NA, "Quadrat"), c(8,18))
+
+#unknown set up
+#observers
+reg_unks<-unknown%>%
+  select(UnknownID, SalientFeatures, Genus, Species, UnknownSpeciesNote)
+rep_unks<-rep_unknown%>%
+  select(UnknownID, SalientFeatures, Genus, Species, UnknownSpeciesNote)
+allunks<-reg_unks%>%
+  full_join(rep_unks)
+```
+
+# **Basic info**
+
+##### Total number of plots sampled:
+
+```{r}
+event%>%select(PlotID)%>%
+  summarize (Count = n())
+```
+
+##### Number of regular quadrats sampled per plot (should be 15 for all standard plots, 10 for Fire Effects collaboration plots).
+
+```{r}
+
+plots_sampled<-observers%>%
+  select(TransectQuadratID)%>%
+  separate(TransectQuadratID, into = c("Plot", NA, "Quadrat"), c(8,18))%>%
+  distinct()
+
+plot_summary<-plots_sampled%>%
+  group_by(Plot)%>%
+  summarize(No_Quads = n())%>%
+  left_join(dates, by = "Plot")%>%
+  arrange(Plot)
+
+plot_summary%>%gt()%>%tab_header(title = "Plots Sampled") %>%
+  tab_style(
+style = list(cell_fill(color = "thistle"),
+cell_text(weight = "bold")),
+locations = cells_title())%>%
+  tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")),
+locations = cells_column_labels())%>%
+tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")),
+locations = cells_body(columns = Plot))%>%
+tab_style(
+style = list(cell_fill(color = "lightsalmon2"),
+cell_text(weight = "bold")), 
+locations = cells_body(columns = No_Quads))%>%
+   tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")),
+locations = cells_body(columns = EventDate))%>%
+  cols_label(No_Quads = "# of quads",
+             Plot = "Plot number", EventDate = "Date")
+```
+
+##### **Total unique species identified during sampling:**
+
+```{r}
+species_count<-regular_spp%>%
+  select(Species)%>%
+  distinct()%>%
+  mutate(SpeciesCount = 1)%>%
+  summarize(TotalCount = sum(SpeciesCount))
+
+species_count$TotalCount
+```
+
+##### List of all species observed and average percent cover across plots:
+
+```{r}
+species_sampled<-regular_spp%>%
+  select(Species, Cover)%>%
+  group_by(Species)%>%
+  summarize(MeanCover = mean(Cover))%>%
+  filter(MeanCover>0)%>%
+  arrange(desc(MeanCover))
+
+#total number of species encountered
+spp<-species_sampled%>%gt()%>%tab_header(title = "Species Sampled") %>%
+tab_style(
+style = list(cell_fill(color = "thistle"),
+cell_text(weight = "bold")),
+locations = cells_title())%>%
+  tab_style(
+style = list(cell_fill(color = "lightsalmon2"),
+cell_text(weight = "bold")),
+locations = cells_column_labels())%>%
+  tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")),
+locations = cells_body(columns = Species))%>%
+tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")), 
+locations = cells_body(columns = MeanCover))%>%
+  cols_label(MeanCover = "Mean % cover")
+
+fmt_number(spp, columns = starts_with("Mean"), decimals = 2)
+```
+
+##### Unknown species recorded during sampling.
+
+```{r}
+unknowns_sampled<-allunks%>%
+  select(UnknownID:SalientFeatures)
+#table of unknowns
+unks<-gt(unknowns_sampled)%>%tab_header(title = "Unknown Species") %>%
+  tab_style(
+style = list(cell_fill(color = "thistle"),
+cell_text(weight = "bold")),
+locations = cells_title())%>%
+    tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")),
+locations = cells_column_labels())%>%
+    tab_style(
+style = list(cell_fill(color = "lightsalmon2"),
+cell_text(weight = "bold")),
+locations = cells_body(columns = UnknownID))%>%
+tab_style(
+style = list(cell_fill(color = "lightsalmon2"),
+cell_text(weight = "bold")), 
+locations = cells_body(columns = SalientFeatures))%>%
+  cols_label(SalientFeatures = "Salient Features")
+unks
+
+```
+
+##### Total number of plants observed by each observer:
+
+```{r}
+species_sampled_by_obs<-regular_spp%>%
+  left_join(reg_observers, by = 'TransectQuadratID')%>%
+  select(Species, RegObs)%>%
+  group_by(RegObs)%>%
+  summarize(Species_by_Observer = n())%>%
+  arrange(desc(Species_by_Observer))
+#total number of species each observer encountered (regular plots)
+obs<-species_sampled_by_obs%>%gt()%>%tab_header(title = "Count of species by observer") %>%
+tab_style(
+style = list(cell_fill(color = "thistle"),
+cell_text(weight = "bold")),
+locations = cells_title())%>%
+  tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")),
+locations = cells_column_labels())%>%
+  tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")),
+locations = cells_body(columns = RegObs))%>%
+tab_style(
+style = list(cell_fill(color = "lightsalmon2"),
+cell_text(weight = "bold")), 
+locations = cells_body(columns = Species_by_Observer))%>%
+  cols_label(Species_by_Observer = "# observations", RegObs = "Recorded observer")
+obs
+```
+
+##### **Error check observers and plots:**
+
+```{r}
+plots_ecsampled<-all_spp_obs%>%
+  select(Plot, RegObs, RepObs)%>%
+  distinct()%>%
+  arrange(Plot)
+
+echeck<-plots_ecsampled%>%gt()%>%tab_header(title = "Plots error checked") %>%
+tab_style(
+style = list(cell_fill(color = "thistle"),
+cell_text(weight = "bold")),
+locations = cells_title())%>%
+  tab_style(
+style = list(cell_fill(color = "lightsalmon2"),
+cell_text(weight = "bold")),
+locations = cells_column_labels())%>%
+  tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")),
+locations = cells_body(columns = RegObs))%>%
+    tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")),
+locations = cells_body(columns = RepObs))%>%
+tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")), 
+locations = cells_body(columns = Plot))%>%
+  cols_label(RegObs = "Regular observer", RepObs = "Repeat observer")
+echeck
+```
+
+# Error Checking
+
+### **Observer errors in nested frequency quadrat size**
+
+##### What percent of nested quadrat observations matched exactly?
+
+```{r}
+#how many obs were exact nested?
+nested_match<-all_spp_obs%>%
+  mutate(Match = ifelse(Quad == EC_Quad, 1, 0)*100)%>%
+  filter(!is.na(Match))%>%
+  summarize(Nested_Matched = sum(Match)/n())
+nested_match
+
+```
+
+##### How did quadrat size differ between observers?
+
+```{r}
+freqdiff<-all_spp_obs%>%
+  mutate(FreqDiff=Quad-EC_Quad)%>%
+  filter(!is.na(Quad) & !is.na(EC_Quad))
+
+freqtableofdiff<-freqdiff%>%
+   #filter(!FreqDiff==0)%>%
+   select(Plot, Quadrat, Species, Quad, EC_Quad, FreqDiff, RegObs, RepObs)%>%
+  arrange(FreqDiff)
+
+freqtableJUSTdiff<-freqdiff%>%
+   filter(!FreqDiff==0)%>%
+   select(Plot, Quadrat, Species, Quad, EC_Quad, FreqDiff, RegObs, RepObs)%>%
+  arrange(FreqDiff)
+
+#first figure - histogram of all diffs
+ggplot(freqtableofdiff)+
+  geom_histogram(aes(x = FreqDiff), fill = "hotpink3", color="#69b3a2",
+                 binwidth = 1)+
+  labs(title= "Difference in quadrat size", x = "Difference in nested quadrat size")+
+  theme_bw()+
+  theme(axis.text=element_text(size=16),
+        axis.title=element_text(size=16,face="bold"),
+        plot.title=element_text(size=20, face = "bold"))
+#second figure actual differences
+ggplot(freqtableJUSTdiff)+
+  geom_segment(aes(y=Species, yend=Species, x = Quad, xend = EC_Quad), color = "hotpink3", linewidth = 1)+
+  geom_point(aes(y=Species, x = Quad),  color="#69b3a2",
+        fill="#69b3a2",
+        shape=21,
+        alpha=0.8,
+        size=3,
+        stroke = 2)+
+  geom_point(aes(y=Species, x = EC_Quad),  color="hotpink3",
+        fill="hotpink3",
+        shape=21,
+        alpha=0.8,
+        size=3,
+        stroke = 2)+
+  #facet_wrap(~Plot, nrow=2)+
+  labs(title= "Nested frequency errors", x = "Quadrat size")+
+  theme_bw()+
+  theme(axis.text.x=element_text(size=16),
+        axis.text.y=element_text(size=10),
+        axis.title=element_text(size=16,face="bold"),
+        plot.title=element_text(size=20, face = "bold"))
+```
+
+### **Observer errors in percent cover**
+
+##### How did percent cover differ between observers in cover of lifeforms?
+
+```{r}
+
+fxncoverdiff<-all_fxn_obs%>%
+  mutate(CoverDiff=Cover-EC_Cover)%>%
+  filter(!is.na(Cover) & !is.na(EC_Cover))
+
+sizeofdiff<-fxncoverdiff%>%
+  summarize(Mean_Error = mean(abs(CoverDiff)))
+
+#how many obs were exact cover?
+cover_match<-all_fxn_obs%>%
+  mutate(Match = ifelse(Cover == EC_Cover, 1, 0))%>%
+  filter(!is.na(Match))%>%
+  summarize(Cover_Matched = sum(Match)/n()*100)
+#observer errors
+
+#first get text of exact matches
+grob <- grobTree(textGrob(paste("Percent matched: ",op(cover_match$Cover_Matched), "%"), x=0.05,  y=0.7, hjust=0,
+  gp=gpar(col="black", fontsize=14, fontface="bold")))
+
+grob2 <- grobTree(textGrob(paste("Average difference: ",op (sizeofdiff$Mean_Error), "%"), x=0.05,  y=0.6, hjust=0,
+  gp=gpar(col="black", fontsize=14, fontface="bold")))
+
+
+#change labels
+fxn.labs<-c("Total foliar", "Per. grass", "Shrub", "Forb", "Ann. grass", 'Cactus',  "Dead herb.", "Dead woody")
+names(fxn.labs) <- c("TotalLiveFoliarCoverPercent_10m", "PerennialGrassCoverPercent_10m", "ShrubCoverPercent_10m", "ForbCoverPercent_10m", "AnnualGrassCoverPercent_10m", "CactusSucculentCoverPercent_10m", 
+"StandingDeadHerbaceousCoverPercent_10m", 
+"StandingDeadWoodyCoverPercent_10m")
+
+#then make figure showing differences in cover between observers by lifeform
+ggplot(fxncoverdiff)+
+  geom_point(aes(x = CoverDiff, y = Functional_Group),
+              color="hotpink3",
+        fill="#69b3a2",
+        shape=22,
+        alpha=0.7,
+        size=7,
+        stroke = 2)+
+  labs(title = "Difference between %cover of lifeforms", x = "Percent cover difference between observers", y="Lifeform")+ scale_y_discrete(labels = fxn.labs)+
+  annotation_custom(grob)+
+  annotation_custom(grob2)+
+  theme_bw()+
+  theme(axis.text=element_text(size=16),
+        axis.title=element_text(size=16,face="bold"),
+        plot.title=element_text(size=20, face = "bold"))
+
+```
+
+##### How did percent cover differ by observers in cover of species?
+
+```{r}
+#how many obs were exact cover?
+cover_match<-all_spp_obs%>%
+  mutate(Match = ifelse(Cover == EC_Cover, 1, 0))%>%
+  filter(!is.na(Match))%>%
+  summarize(Cover_Matched = sum(Match)/n()*100)
+#what was the ave cover difference?
+speciescoverdiff<-all_spp_obs%>%
+  mutate(CoverDiff=Cover-EC_Cover)%>%
+  filter(!is.na(Cover) & !is.na(EC_Cover))
+sizeofdiff<-speciescoverdiff%>%
+  summarize(Mean_Error = mean(abs(CoverDiff)))
+
+coverdiff<-all_spp_obs%>%
+  mutate(CoverDiff=Cover-EC_Cover)%>%
+  filter(!is.na(Cover) & !is.na(EC_Cover))
+
+covertableofdiff<-coverdiff%>%
+  filter(!CoverDiff==0)%>%
+   select(Plot, Quadrat, Species, Cover, EC_Cover, CoverDiff, RegObs, RepObs)
+
+sppgrob <- grobTree(textGrob(paste("Percent matched: ",op(cover_match$Cover_Matched), "%"), x=0.05,  y=.7, hjust=0,
+  gp=gpar(col="black", fontsize=14, fontface="bold")))
+
+sppgrob2 <- grobTree(textGrob(paste("Average difference: ",op (sizeofdiff$Mean_Error), "%"), x=0.05,  y=0.6, hjust=0,
+  gp=gpar(col="black", fontsize=14, fontface="bold")))
+#then make figure showing differences in cover between observers by lifeform
+ggplot(coverdiff)+
+  geom_point(aes(x = CoverDiff, y = Plot),
+              color="hotpink3",
+        fill="#69b3a2",
+        shape=22,
+        alpha=0.7,
+        size=6,
+        stroke = 2)+
+  labs(title = "Difference between % cover of species", x = "Percent cover difference between observers", y="Lifeform")+
+  annotation_custom(sppgrob)+
+  annotation_custom(sppgrob2)+
+  theme_bw()+
+  theme(axis.text=element_text(size=16),
+        axis.title=element_text(size=16,face="bold"),
+        plot.title=element_text(size=20, face = "bold"))
+
+```
+
+## Pseudoturnover
+
+##### How often were species missed by one observer and recorded by another?
+
+```{r}
+pseudoturn<-all_spp_obs%>%
+  filter(is.na(Quad)&!is.na(EC_Quad)|is.na(EC_Quad)&!is.na(Quad))%>%
+  select(Plot, Species, Quad, EC_Quad, RegObs, RepObs)
+#mutate to get who is finding what others miss both ways
+bestobs<-pseudoturn%>%
+  mutate(SuperFinder = ifelse(is.na(EC_Quad), RegObs, RepObs))
+
+countofpseudo<-pseudoturn%>%
+  group_by(Species)%>%
+  summarize(Count=n())%>%
+  arrange(desc(Count))
+
+pseudo<-countofpseudo%>%gt()%>%tab_header(title = "Pseudoturnover by species") %>%
+tab_style(
+style = list(cell_fill(color = "thistle"),
+cell_text(weight = "bold")),
+locations = cells_title())%>%
+  tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")),
+locations = cells_column_labels())%>%
+  tab_style(
+style = list(cell_fill(color = "lightsalmon2"),
+cell_text(weight = "bold")),
+locations = cells_body(columns = Species))%>%
+tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")), 
+locations = cells_body(columns = Count))%>%
+  cols_label(Count = "Missed observations")
+pseudo
+```
+
+##### Who found the most species others missed?
+
+```{r}
+obsofpseudo<-bestobs%>%
+  group_by(SuperFinder)%>%
+  summarize(Count=n())%>%
+  arrange(desc(Count))
+
+superfinders<-obsofpseudo%>%gt()%>%tab_header(title = "Super finders") %>%
+tab_style(
+style = list(cell_fill(color = "thistle"),
+cell_text(weight = "bold")),
+locations = cells_title())%>%
+  tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")),
+locations = cells_column_labels())%>%
+  tab_style(
+style = list(cell_fill(color = "lightsalmon2"),
+cell_text(weight = "bold")),
+locations = cells_body(columns = SuperFinder))%>%
+tab_style(
+style = list(cell_fill(color = "#69b3a2"),
+cell_text(weight = "bold")), 
+locations = cells_body(columns = Count))%>%
+  cols_label(Count = "Super finds", SuperFinder = "Observer")
+superfinders
+```
+
+## Tables of observer error data
+
+### Difference in lifeform cover
+```{r}
+datatable(fxncoverdiff, options = list(pageLength = 20, dom = 't'), rownames=FALSE, width = 500) 
+```
+
+### Difference in species nested frequency
+```{r}
+#then table of just differences
+datatable(freqtableofdiff, options = list(pageLength = 20, dom = 't'), rownames=FALSE, width = 500) 
+```
+
+# Difference in species cover
+```{r}
+datatable(covertableofdiff, options = list(pageLength = 20, dom = 't'), rownames=FALSE, width = 500) 
+```
+
+### Pseudoturnover
+```{r}
+datatable(pseudoturn, options = list(pageLength = 20, dom = 't'), rownames=FALSE, width = 500) 
+```
+
+
+
+
+
+

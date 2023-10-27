@@ -9,7 +9,6 @@ format:
     embed-resources: true
     echo: false
     smooth-scroll: true
-    #theme: cosmo
     fontcolor: black
     toc: true
     toc-location: left
